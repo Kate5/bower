@@ -798,6 +798,8 @@
                             if ((pos = objMap.indexOf(obj[prop])) != -1) {
                                 objMap[pos]["__subID"] = objMap[pos]["__subID"] || GenID();
                                 obj[prop] = {"__originSubID": objMap[pos]["__subID"]};
+                            } else if (Utils.isDate(obj[prop])) {
+                                obj[prop] = obj[prop].getTime();
                             } else {
                                 objMap.push(obj[prop]);
                                 _replCircDepsHelper(obj[prop]);
@@ -861,15 +863,32 @@
             return isAsync ? result : this._parseResponse(result);
         },
         remove: function (objId, async) {
+            if(!Utils.isObject(obj)) {
+                throw new Error('Invalid value for the "value" argument. The argument must contain only object values');
+            }
+            var describedClass = Backendless.Persistence.describe(obj),
+                sendParam = "";
+            for(var i = 0; i < describedClass.length; i++ ){
+                for(var key in describedClass[i]){
+                    if(key == 'primaryKey' && describedClass[i][key]){
+                        sendParam += describedClass[i]['name'];
+                        for(var key2 in obj){
+                            if(key2 == describedClass[i]['name']){
+                                sendParam += '=' + obj[key2] + '&';
+                            }
+                        }
+                    }
+                }
+            }
+            sendParam = sendParam.replace(/&$/,"");
             var responder = extractResponder(arguments), isAsync = false;
-            objId = objId.objectId || objId;
             if (responder != null) {
                 isAsync = true;
                 responder = this._wrapAsync(responder);
             }
             var result = Backendless._ajax({
                 method: 'DELETE',
-                url: this.restUrl + '/' + objId,
+                url: this.restUrl + '/' + ((sendParam.search(/&/) != -1) ? 'pk?' + sendParam : sendParam.split("=")[1]),
                 isAsync: isAsync,
                 asyncHandler: responder
             });
@@ -1422,10 +1441,14 @@
                 validUser = "";
             if (cache.get("user-token")) {
                 userToken = cache.get("user-token");
-                return Backendless._ajax({
-                    method: 'GET',
-                    url: Backendless.serverURL + '/' + Backendless.appVersion + '/users/isvalidusertoken/' + userToken
-                });
+                try {
+                    return Backendless._ajax({
+                        method: 'GET',
+                        url: Backendless.serverURL + '/' + Backendless.appVersion + '/users/isvalidusertoken/' + userToken
+                    });
+                } catch(e){
+                    return false;
+                }
             } else {
                 validUser = Backendless.UserService.getCurrentUser();
                 return (validUser != null) ? true : false;
@@ -1495,7 +1518,7 @@
         _findHelpers: {
             'searchRectangle': function (arg) {
                 var rect = [
-                    'nwlat=' + arg[0], 'nwlon=' + arg[1], 'selat=' + arg[2], 'selon=' + arg[3]
+                        'nwlat=' + arg[0], 'nwlon=' + arg[1], 'selat=' + arg[2], 'selon=' + arg[3]
                 ];
                 return rect.join('&');
             },
@@ -2158,11 +2181,89 @@
         }
     }
 
+    function sendEncoded(e){
+        var xhr = new XMLHttpRequest(),
+            boundary = '-backendless-multipart-form-boundary-' + getNow(),
+            builder = getBuilder(this.fileName, e.target.result, boundary),
+            badResponse = function (xhr) {
+                var result = {};
+                try {
+                    result = JSON.parse(xhr.responseText);
+                } catch (e) {
+                    result.message = xhr.responseText;
+                }
+                result.statusCode = xhr.status;
+                return result;
+            };
+
+        xhr.open("PUT", this.uploadPath, true);
+        xhr.setRequestHeader('Content-Type', 'text/plain');
+        xhr.setRequestHeader('application-id', Backendless.applicationId);
+        xhr.setRequestHeader("secret-key", Backendless.secretKey);
+        xhr.setRequestHeader("application-type", "JS");
+        if (UIState !== null) {
+            xhr.setRequestHeader("uiState", UIState);
+        }
+        var asyncHandler = this.asyncHandler;
+        if (asyncHandler)
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState == 4) {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        asyncHandler.success(JSON.parse(xhr.responseText));
+                    } else {
+                        asyncHandler.fault(JSON.parse(xhr.responseText));
+                    }
+                }
+            };
+        xhr.send(e.target.result.split(',')[1]);
+
+        if (asyncHandler) {
+            return xhr;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+            return xhr.responseText ? JSON.parse(xhr.responseText) : true;
+        } else {
+            throw badResponse(xhr);
+        }
+    }
+
     function Files() {
         this.restUrl = Backendless.appPath + '/files';
     }
 
     Files.prototype = {
+        saveFile: function(path, fileName, fileContent, overwrite, async){
+            if (!path || !Utils.isString(path))
+                throw new Error('Missing values for the "path" arguments. The argument must contain string value');
+            if (!Utils.isString(fileName)){
+                if (fileName instanceof File) {
+                    overwrite = fileContent;
+                    fileContent = arguments[1];
+                    fileName = fileContent.name;
+                } else {
+                    throw new Error('Missing values for the "fileName" arguments. The argument must contain string value');
+                }
+            }
+            if(fileContent.size > 2800000){
+                throw new Error('File Content size must be less than 2,800,000 bytes');
+            }
+            var baseUrl = this.restUrl + '/binary/' + path + ((Utils.isString(fileName)) ? '/' + fileName : '') + ((overwrite) ? '?overwrite=true' : '');
+            try {
+                var reader = new FileReader();
+                reader.fileName = fileContent.name;
+                reader.uploadPath = baseUrl;
+                reader.onloadend = sendEncoded;
+                reader.asyncHandler = async;
+                reader.onerror = function (evn) {
+                    async.fault(evn);
+                };
+                reader.readAsDataURL(files[0]);
+
+            }
+            catch (err) {
+                console.log(err);
+            }
+        },
         upload: function (files, path, async) {
             files = files.files || files;
             var baseUrl = this.restUrl + '/' + path + '/';
