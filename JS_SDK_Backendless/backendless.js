@@ -71,10 +71,10 @@
     var browser = (function () {
         var ua = isBrowser() ? navigator.userAgent.toLowerCase() : "NodeJS",
             match = (/(chrome)[ \/]([\w.]+)/.exec(ua) ||
-                /(webkit)[ \/]([\w.]+)/.exec(ua) ||
-                /(opera)(?:.*version|)[ \/]([\w.]+)/.exec(ua) ||
-                /(msie) ([\w.]+)/.exec(ua) ||
-                ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec(ua) || []),
+            /(webkit)[ \/]([\w.]+)/.exec(ua) ||
+            /(opera)(?:.*version|)[ \/]([\w.]+)/.exec(ua) ||
+            /(msie) ([\w.]+)/.exec(ua) ||
+            ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec(ua) || []),
             matched = {
                 browser: match[ 1 ] || '',
                 version: match[ 2 ] || '0'
@@ -839,13 +839,9 @@
             this._replCircDeps(obj);
             var responder = extractResponder(arguments),
                 isAsync = false,
-                method = 'POST',
+                method = 'PUT',
                 url = this.restUrl,
                 objRef = obj;
-            if (obj.objectId) {
-                method = 'PUT';
-                url += '/' + obj.objectId;
-            }
             if (responder != null) {
                 isAsync = true;
                 responder = this._wrapAsync(responder);
@@ -863,38 +859,34 @@
             return isAsync ? result : this._parseResponse(result);
         },
         remove: function (objId, async) {
-            if(!Utils.isObject(obj)) {
-                throw new Error('Invalid value for the "value" argument. The argument must contain only object values');
+            if(!Utils.isObject(objId) && !Utils.isString(objId)){
+                throw new Error('Invalid value for the "value" argument. The argument must contain only string or object values');
             }
-            var describedClass = Backendless.Persistence.describe(obj),
-                sendParam = "";
-            for(var i = 0; i < describedClass.length; i++ ){
-                for(var key in describedClass[i]){
-                    if(key == 'primaryKey' && describedClass[i][key]){
-                        sendParam += describedClass[i]['name'];
-                        for(var key2 in obj){
-                            if(key2 == describedClass[i]['name']){
-                                sendParam += '=' + obj[key2] + '&';
-                            }
-                        }
-                    }
-                }
-            }
-            sendParam = sendParam.replace(/&$/,"");
             var responder = extractResponder(arguments), isAsync = false;
             if (responder != null) {
                 isAsync = true;
                 responder = this._wrapAsync(responder);
             }
-            var result = Backendless._ajax({
-                method: 'DELETE',
-                url: this.restUrl + '/' + ((sendParam.search(/&/) != -1) ? 'pk?' + sendParam : sendParam.split("=")[1]),
-                isAsync: isAsync,
-                asyncHandler: responder
-            });
+            var result;
+            if(Utils.isString(objId) || objId.objectId){
+                objId = objId.objectId || objId;
+                result = Backendless._ajax({
+                    method: 'DELETE',
+                    url: this.restUrl + '/' + objId,
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                });
+            } else {
+                result = Backendless._ajax({
+                    method: 'DELETE',
+                    url: this.restUrl,
+                    data:JSON.stringify(objId),
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                });
+            }
             return isAsync ? result : this._parseResponse(result);
         },
-
         find: function (dataQuery) {
             dataQuery = dataQuery || {};
             var props,
@@ -966,20 +958,75 @@
         },
 
         findById: function () {
-            var argsObj = this._buildArgsObject.apply(this, arguments);
-            if (!(argsObj.url)) {
-                throw new Error('missing argument "object ID" for method findById()');
+            var argsObj;
+            if(Utils.isString(arguments[0])){
+                argsObj = this._buildArgsObject.apply(this, arguments);
+                if (!(argsObj.url)) {
+                    throw new Error('missing argument "object ID" for method findById()');
+                }
+                return this.find.apply(this, [argsObj].concat(Array.prototype.slice.call(arguments)));
+            } else if(Utils.isObject(arguments[0])) {
+                argsObj = arguments[0];
+                var responder = extractResponder(arguments),
+                    url = this.restUrl,
+                    isAsync = responder != null,
+                    send = "/pk?";
+                for(var key in argsObj){
+                    send += key + '=' + argsObj[key] + '&';
+                }
+                responder != null && (responder = this._wrapAsync(responder));
+                var result;
+                if(getClassName.call(arguments[0]) == 'Object') {
+                    result = Backendless._ajax({
+                        method: 'GET',
+                        url: url + send.replace(/&$/, ""),
+                        isAsync: isAsync,
+                        asyncHandler: responder
+                    });
+                } else {
+                    result = Backendless._ajax({
+                        method: 'PUT',
+                        url: url,
+                        data:JSON.stringify(argsObj),
+                        isAsync: isAsync,
+                        asyncHandler: responder
+                    });
+                }
+                return isAsync ? result : this._parseResponse(result);
+            } else {
+                throw new Error('Invalid value for the "value" argument. The argument must contain only string or object values');
             }
-            return this.find.apply(this, [argsObj].concat(Array.prototype.slice.call(arguments)));
         },
 
         loadRelations: function (obj) {
-            if (!(obj && obj.objectId)) {
+//                argsObj = this._buildArgsObject.apply(this, arguments);
+//                argsObj.url = obj.objectId;
+//                deepExtend(obj, this.find.apply(this, [argsObj].concat(Array.prototype.slice.call(arguments))));
+            if (!obj) {
                 throw new Error('missing object argument for method loadRelations()');
             }
-            var argsObj = this._buildArgsObject.apply(this, arguments);
-            argsObj.url = obj.objectId;
-            deepExtend(obj, this.find.apply(this, [argsObj].concat(Array.prototype.slice.call(arguments))));
+            if (!Utils.isObject(obj)) {
+                throw new Error('Invalid value for the "value" argument. The argument must contain only object values');
+            }
+            var argsObj = arguments[0];
+            var url = this.restUrl + '/relations';
+            if (arguments[1]) {
+                if (Utils.isArray(arguments[1])) {
+                    if (arguments[1][0] == '*') {
+                        url += '?relationsDepth=' + arguments[1].length;
+                    } else {
+                        url += '?loadRelations=' + arguments[1][0] + '&relationsDepth=' + arguments[1].length;
+                    }
+                } else {
+                    throw new Error('Invalid value for the "options" argument. The argument must contain only array values');
+                }
+            }
+            var result = Backendless._ajax({
+                method: 'PUT',
+                url: url,
+                data: JSON.stringify(argsObj)
+            });
+            deepExtend(obj, result);
         },
 
         findFirst: function () {
@@ -1518,7 +1565,7 @@
         _findHelpers: {
             'searchRectangle': function (arg) {
                 var rect = [
-                        'nwlat=' + arg[0], 'nwlon=' + arg[1], 'selat=' + arg[2], 'selon=' + arg[3]
+                    'nwlat=' + arg[0], 'nwlon=' + arg[1], 'selat=' + arg[2], 'selon=' + arg[3]
                 ];
                 return rect.join('&');
             },
@@ -1563,7 +1610,7 @@
                 }
             },
             'relativeFindMetadata': function (arg) {
-                return 'relativeFindMetadata=' + JSON.stringify(arg);
+                return 'relativeFindMetadata=' + encodeURIComponent(JSON.stringify(arg));
             },
             'condition': function (arg) {
                 return 'whereClause=' + encodeURIComponent(arg);
@@ -1618,7 +1665,7 @@
             }
             else {
                 url += query.searchRectangle ? '/rect?' : '/points?';
-                url += 'units=' + (query.units ? query.units : Backendless.Geo.UNITS.KILOMETERS);
+                url += query.units ? 'units=' + query.units : '';
                 for (var prop in query) {
                     if (query.hasOwnProperty(prop) && this._findHelpers.hasOwnProperty(prop) && query[prop] != undefined) {
                         url += '&' + this._findHelpers[prop](query[prop]);
@@ -1651,7 +1698,7 @@
 
         addCategory: function (name, async) {
             if (!name) {
-                throw new Error('Category name is requred.');
+                throw new Error('Category name is required.');
             }
             var responder = extractResponder(arguments);
             var isAsync = responder != null;
@@ -2234,15 +2281,15 @@
     Files.prototype = {
         saveFile: function(path, fileName, fileContent, overwrite, async){
             if (!path || !Utils.isString(path))
-                throw new Error('Missing values for the "path" arguments. The argument must contain string value');
-            if (!Utils.isString(fileName)){
-                if (fileName instanceof File) {
-                    overwrite = fileContent;
-                    fileContent = arguments[1];
-                    fileName = fileContent.name;
-                } else {
-                    throw new Error('Missing values for the "fileName" arguments. The argument must contain string value');
-                }
+                throw new Error('Missing value for the "path" argument. The argument must contain a string value');
+            if (!fileName || !Utils.isString(path))
+                throw new Error('Missing value for the "fileName" argument. The argument must contain a string value');
+            if (overwrite instanceof Backendless.Async) {
+                async = overwrite;
+                overwrite = null;
+            }
+            if(!(fileContent instanceof File)) {
+                fileContent = new Blob([fileContent]);
             }
             if(fileContent.size > 2800000){
                 throw new Error('File Content size must be less than 2,800,000 bytes');
@@ -2250,17 +2297,21 @@
             var baseUrl = this.restUrl + '/binary/' + path + ((Utils.isString(fileName)) ? '/' + fileName : '') + ((overwrite) ? '?overwrite=true' : '');
             try {
                 var reader = new FileReader();
-                reader.fileName = fileContent.name;
+                reader.fileName = fileName;
                 reader.uploadPath = baseUrl;
                 reader.onloadend = sendEncoded;
-                reader.asyncHandler = async;
+                if(async) {
+                    reader.asyncHandler = async;
+                }
                 reader.onerror = function (evn) {
                     async.fault(evn);
                 };
-                reader.readAsDataURL(files[0]);
+                reader.readAsDataURL(fileContent);
+                if(!async) {
+                    return true;
+                }
 
-            }
-            catch (err) {
+            } catch (err) {
                 console.log(err);
             }
         },
