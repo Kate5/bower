@@ -474,25 +474,27 @@
     };
 
     function extendCollection(collection, dataMapper) {
-        if (collection.nextPage && collection.nextPage.split("/")[1] == Backendless.appVersion) {
-            collection.nextPage = Backendless.serverURL + collection.nextPage
+        if (collection.nextPage !== undefined) {
+            if (collection.nextPage && collection.nextPage.split("/")[1] == Backendless.appVersion) {
+                collection.nextPage = Backendless.serverURL + collection.nextPage
+            }
+            collection._nextPage = collection.nextPage;
+            collection.nextPage = function (async) {
+                return dataMapper._load(this._nextPage, async);
+            };
+            collection.getPage = function (offset, pageSize, async) {
+                var nextPage = this._nextPage.replace(/offset=\d+/ig, 'offset=' + offset);
+                if (pageSize instanceof Async) {
+                    async = pageSize;
+                }
+                else {
+                    nextPage = nextPage.replace(/pagesize=\d+/ig, 'pageSize=' + pageSize);
+                }
+                async = extractResponder(arguments);
+                return dataMapper._load(nextPage, async);
+            };
+            collection.dataMapper = dataMapper;
         }
-        collection._nextPage = collection.nextPage;
-        collection.nextPage = function (async) {
-            return dataMapper._load(this._nextPage, async);
-        };
-        collection.getPage = function (offset, pageSize, async) {
-            var nextPage = this._nextPage.replace(/offset=\d+/ig, 'offset=' + offset);
-            if (pageSize instanceof Async) {
-                async = pageSize;
-            }
-            else {
-                nextPage = nextPage.replace(/pagesize=\d+/ig, 'pageSize=' + pageSize);
-            }
-            async = extractResponder(arguments);
-            return dataMapper._load(nextPage, async);
-        };
-        collection.dataMapper = dataMapper;
     }
 
     function Async(successCallback, faultCallback, context) {
@@ -749,6 +751,14 @@
         },
         _parseResponse: function (response) {
             var i, len, _Model = this.model, item;
+            response = response.fields || response;
+            item = new _Model;
+            extendCollection(response, this);
+            deepExtend(item, response);
+            return this._formCircDeps(item);
+        },
+        _parseFindResponse: function (response) {
+            var i, len, _Model = this.model, item;
             if (response.data) {
                 var collection = response, arr = collection.data;
                 for (i = 0, len = arr.length; i < len; ++i) {
@@ -769,20 +779,22 @@
 
         },
         _load: function (url, async) {
-            var responder = extractResponder(arguments), isAsync = false;
-            if (responder != null) {
-                isAsync = true;
-                responder = this._wrapAsync(responder);
+            if(url) {
+                var responder = extractResponder(arguments), isAsync = false;
+                if (responder != null) {
+                    isAsync = true;
+                    responder = this._wrapAsync(responder);
+                }
+
+                var result = Backendless._ajax({
+                    method: 'GET',
+                    url: url,
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                });
+
+                return isAsync ? result : this._parseResponse(result);
             }
-
-            var result = Backendless._ajax({
-                method: 'GET',
-                url: url,
-                isAsync: isAsync,
-                asyncHandler: responder
-            });
-
-            return isAsync ? result : this._parseResponse(result);
         },
         _replCircDeps: function (obj) {
             var objMap = [obj],
@@ -897,7 +909,7 @@
                 responder = extractResponder(arguments),
                 isAsync = responder != null,
                 result;
-            if (dataQuery.properties) {
+            if (dataQuery.properties && dataQuery.properties.length) {
                 props = 'props=' + encodeArrayToUriComponent(dataQuery.properties);
             }
             if (dataQuery.condition) {
@@ -924,7 +936,7 @@
                 asyncHandler: responder,
                 cachePolicy: dataQuery.cachePolicy
             });
-            return isAsync ? result : this._parseResponse(result);
+            return isAsync ? result : this._parseFindResponse(result);
         },
 
         _buildArgsObject: function () {
@@ -1234,6 +1246,7 @@
                     if (i == 'user-token') {
                         if (Backendless.LocalCache.get("stayLoggedIn")) {
                             Backendless.LocalCache.set("user-token", user[i]);
+                            Backendless.LocalCache.set("current-user", user);
                         }
                         continue;
                     }
@@ -1276,6 +1289,7 @@
                 successCallback = isAsync ? responder.success : null,
                 logoutUser = function () {
                     Backendless.LocalCache.remove("user-token");
+                    Backendless.LocalCache.remove("current-user");
                     currentUser = null;
                 },
                 onLogoutSuccess = function () {
@@ -1316,7 +1330,11 @@
             }
         },
         getCurrentUser: function () {
-            return currentUser ? this._getUserFromResponse(currentUser) : null;
+            if(Backendless.LocalCache.get("current-user")){
+                return Backendless.LocalCache.get("current-user");
+            } else {
+                return currentUser ? this._getUserFromResponse(currentUser) : null;
+            }
         },
         update: function (user, async) {
             if (!(user instanceof Backendless.User)) {
@@ -1482,23 +1500,37 @@
                 });
             }
         },
-        isValidLogin: function () {
+        isValidLogin: function (async) {
             var userToken = "",
-                cache = Backendless.LocalCache,
-                validUser = "";
+                cache = Backendless.LocalCache;
+            var responder = extractResponder(arguments);
+            var isAsync = responder != null;
+            if (responder) {
+                responder = this._wrapAsync(responder);
+            }
             if (cache.get("user-token")) {
                 userToken = cache.get("user-token");
-                try {
-                    return Backendless._ajax({
+                if(!async) {
+                    try {
+                        var result = Backendless._ajax({
+                            method: 'GET',
+                            url: Backendless.serverURL + '/' + Backendless.appVersion + '/users/isvalidusertoken/' + userToken
+                        });
+                        return (result) ? true : false
+                    } catch (e) {
+                        return false;
+                    }
+                } else {
+                    Backendless._ajax({
                         method: 'GET',
-                        url: Backendless.serverURL + '/' + Backendless.appVersion + '/users/isvalidusertoken/' + userToken
+                        url: Backendless.serverURL + '/' + Backendless.appVersion + '/users/isvalidusertoken/' + userToken,
+                        isAsync: isAsync,
+                        asyncHandler: responder
                     });
-                } catch(e){
-                    return false;
                 }
             } else {
-                validUser = Backendless.UserService.getCurrentUser();
-                return (validUser != null) ? true : false;
+                var user = Backendless.UserService.getCurrentUser();
+                return (user) ? true : false;
             }
         }
     };
@@ -1506,26 +1538,6 @@
     function Geo() {
         this.restUrl = Backendless.appPath + '/geo';
     }
-
-    function GeoQuery() {
-        this.searchRectangle = null;
-        this.categories = [];
-        this.includeMeta = false;
-
-        this.pageSize = 10;
-        this.latitude = 0;
-        this.longitude = 0;
-        this.radius = 0;
-        this.units = null;
-    }
-
-    GeoQuery.prototype = {
-        addCategory: function () {
-            this.categories = this.categories || [];
-            this.categories.push();
-        }
-    };
-    Backendless.GeoQuery = GeoQuery;
 
     Geo.prototype = {
         UNITS: {
@@ -1578,6 +1590,9 @@
             'metadata': function (arg) {
                 return 'metadata=' + JSON.stringify(arg);
             },
+            'units': function (arg) {
+                return 'units=' + arg;
+            },
             'radius': function (arg) {
                 return 'r=' + arg;
             },
@@ -1614,6 +1629,12 @@
             },
             'condition': function (arg) {
                 return 'whereClause=' + encodeURIComponent(arg);
+            },
+            'degreePerPixel': function (arg){
+                return 'dpp=' + arg;
+            },
+            'clusterGridSize': function(arg){
+                return 'clustergridsize=' + arg;
             }
         },
 
@@ -1625,20 +1646,34 @@
             geopoint.categories = Utils.isArray(geopoint.categories) ? geopoint.categories : [geopoint.categories];
 
             var responder = extractResponder(arguments);
-            var isAsync = responder != null;
+            var responderOverride = function(async){
+                var success = function (data) {
+                    var geoObject = data.geopoint;
+                    var geoPoint = new GeoPoint();
+                    geoPoint.categories = geoObject.categories;
+                    geoPoint.latitude = geoObject.latitude;
+                    geoPoint.longitude = geoObject.longitude;
+                    geoPoint.metadata = geoObject.metadata;
+                    geoPoint.objectId = geoObject.objectId;
+                    data.geopoint = geoPoint;
 
-            var data = 'lat=' + geopoint.latitude;
-            data += '&lon=' + geopoint.longitude;
-            if (geopoint.categories) {
-                data += '&categories=' + encodeArrayToUriComponent(geopoint.categories);
-            }
+                    async.success(data);
+                };
+                var error = function (data) {
+                    async.fault(data);
+                };
+                return new Async(success, error);
+            };
 
-            if (geopoint.metadata) {
-                data += '&metadata=' + JSON.stringify(geopoint.metadata);
+            if (responder != null) {
+                var isAsync = true;
             }
+            responder = responderOverride(responder);
+
             var result = Backendless._ajax({
                 method: 'PUT',
-                url: this.restUrl + '/points?' + data,
+                url: this.restUrl + '/points',
+                data: JSON.stringify(geopoint),
                 isAsync: isAsync,
                 asyncHandler: responder
             });
@@ -1650,10 +1685,6 @@
                 responder = extractResponder(arguments),
                 isAsync = false,
                 searchByCat = true;
-            if (responder != null) {
-                isAsync = true;
-                responder = this._wrapAsync(responder);
-            }
             if (query.searchRectangle && query.radius) {
                 throw new Error("Inconsistent geo query. Query should not contain both rectangle and radius search parameters.");
             }
@@ -1673,6 +1704,39 @@
                 }
             }
             url = url.replace(/\?&/g, '?');
+            var self = this;
+            var responderOverride = function(async){
+                var success = function (data) {
+                    var geoCollection = data.collection.data;
+                    for(var i = 0; i < geoCollection.length; i++){
+                        var geoObject = null;
+                        if(geoCollection[i].hasOwnProperty('totalPoints')){
+                            geoObject = new GeoCluster();
+                            geoObject.totalPoints = geoCollection[i].totalPoints;
+                            geoObject.geoQuery = query;
+                        }
+                        else{
+                            geoObject = new GeoPoint();
+                        }
+                        geoObject.categories = geoCollection[i].categories;
+                        geoObject.latitude = geoCollection[i].latitude;
+                        geoObject.longitude = geoCollection[i].longitude;
+                        geoObject.metadata = geoCollection[i].metadata;
+                        geoObject.objectId = geoCollection[i].objectId;
+                        data.collection.data[i] = geoObject;
+                    }
+                    data = self._parseResponse(data);
+                    async.success(data);
+                };
+                var error = function (data) {
+                    async.fault(data);
+                };
+                return new Async(success, error);
+            };
+            if (responder != null) {
+                isAsync = true;
+            }
+            responder = responderOverride(responder);
             var result = Backendless._ajax({
                 method: 'GET',
                 url: url,
@@ -1685,6 +1749,41 @@
         find: function (query, async) {
             query["url"] = this.restUrl;
             return this.findUtil(query, async);
+        },
+
+        loadMetadata: function(geoObject){
+            var url = this.restUrl + '/points/';
+            if(geoObject.objectId) {
+                if (geoObject instanceof GeoCluster) {
+                    if (geoObject.geoQuery instanceof BackendlessGeoQuery) {
+                        url += geoObject.objectId + '/metadata?';
+                        for (var prop in geoObject.geoQuery) {
+                            {
+                                if (geoObject.geoQuery.hasOwnProperty(prop) && this._findHelpers.hasOwnProperty(prop) && geoObject.geoQuery[prop] != undefined) {
+                                    url += '&' + this._findHelpers[prop](geoObject.geoQuery[prop]);
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        throw new Error("Invalid GeoCluster object. Make sure to obtain an instance of GeoCluster using the Backendless.Geo.find API");
+                    }
+                }
+                else if (geoObject instanceof GeoPoint) {
+                    url += geoObject.objectId + '/metadata';
+                }
+                else {
+                    throw new Error("Method argument must be a valid instance of GeoPoint or GeoCluster persisted on the server");
+                }
+            }
+            else {
+                throw new Error("Method argument must be a valid instance of GeoPoint or GeoCluster persisted on the server");
+            }
+            var result = Backendless._ajax({
+                method: 'GET',
+                url: url
+            });
+            return result;
         },
 
         relativeFind: function (query, async) {
@@ -2850,13 +2949,64 @@ var BackendlessGeoQuery = function () {
     this.longitude = undefined;
     this.radius = undefined;
     this.units = undefined;
+    this.degreePerPixel = undefined;
+    this.clusterGridSize = undefined;
 };
 
 BackendlessGeoQuery.prototype = {
     addCategory: function () {
         this.categories = this.categories || [];
         this.categories.push();
+    },
+    setClusteringParams: function (westLongitude, eastLongitude, mapWidth, clusterGridSize){
+        clusterGridSize = clusterGridSize || 0;
+        var parsedWestLongitude = parseFloat(westLongitude),
+            parsedEastLongitude = parseFloat(eastLongitude),
+            parsedMapWidth = parseInt(mapWidth),
+            parsedClusterGridSize = parseInt(clusterGridSize);
+
+        if(!isFinite(parsedWestLongitude) || parsedWestLongitude < -180 || parsedWestLongitude > 180) {
+            throw new Error("The westLongitude value must be a number in the range between -180 and 180");
+        }
+
+        if(!isFinite(parsedEastLongitude) || parsedEastLongitude < -180 || parsedEastLongitude > 180) {
+            throw new Error("The eastLongitude value must be a number in the range between -180 and 180");
+        }
+
+        if(!isFinite(parsedMapWidth) || parsedMapWidth < 1) {
+            throw new Error("The mapWidth value must be a number greater or equal to 1");
+        }
+
+        if(!isFinite(parsedClusterGridSize) || parsedClusterGridSize < 0) {
+            throw new Error("The clusterGridSize value must be a number greater or equal to 0");
+        }
+
+        var longDiff = parsedEastLongitude - parsedWestLongitude;
+
+        (longDiff < 0) && (longDiff += 360);
+
+        this.degreePerPixel = longDiff / parsedMapWidth;
+        this.clusterGridSize = parsedClusterGridSize || null;
     }
+};
+
+var GeoPoint = function(){
+    this.___class = "GeoPoint";
+    this.categories = undefined;
+    this.latitude = undefined;
+    this.longitude = undefined;
+    this.metadata = undefined;
+    this.objectId = undefined;
+};
+
+var GeoCluster = function(){
+    this.categories = undefined;
+    this.latitude = undefined;
+    this.longitude = undefined;
+    this.metadata = undefined;
+    this.objectId = undefined;
+    this.totalPoints = undefined;
+    this.geoQuery = undefined;
 };
 
 var PublishOptionsHeaders = { //PublishOptions headers namespace helper
