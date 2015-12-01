@@ -76,12 +76,12 @@
             /(msie) ([\w.]+)/.exec(ua) ||
             ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec(ua) || []),
             matched = {
-                browser: match[ 1 ] || '',
-                version: match[ 2 ] || '0'
+                browser: match[1] || '',
+                version: match[2] || '0'
             },
             browser = {};
         if (matched.browser) {
-            browser[ matched.browser ] = true;
+            browser[matched.browser] = true;
             browser.version = matched.version;
         }
         return browser;
@@ -367,30 +367,35 @@
             path: config.url.substr(config.url.indexOf('/', 8)),
             //body: config.data,
             headers: {
-                "Content-Length": config.data ? config.data.length : 0,
+                "Content-Length": config.data ? Buffer.byteLength(config.data) : 0,
                 "Content-Type": config.data ? 'application/json' : 'application/x-www-form-urlencoded',
                 "application-id": Backendless.applicationId,
                 "secret-key": Backendless.secretKey,
                 "application-type": "JS"
             }
         };
-
+        var buffer = '';
         if (currentUser != null) {
             options.headers["user-token"] = currentUser["user-token"];
         }
         if (!config.isAsync) {
-            var http = require("httpsync"),
-                req = http.request(options);
+            throw new Error('Use Async type of request using Backendless with NodeJS. Add Backendless.Async(successCallback, errorCallback) as last argument');
         } else {
             var httpx = require(protocol);
             var req = httpx.request(options, function (res) {
                 res.setEncoding('utf8');
                 res.on('data', function (chunk) {
-                    config.asyncHandler.success(chunk);
+                    buffer += chunk;
                 });
+                res.on('end', function () {
+                    var callback = config.asyncHandler[res.statusCode >= 200 && res.statusCode < 300 ? "success" : "fault"];
+
+                    if (Utils.isFunction(callback)) {
+                        callback(buffer);
+                    }
+                })
             });
         }
-
         req.on('error', function (e) {
             config.asyncHandler.fault || (config.asyncHandler.fault = function () {
             });
@@ -403,6 +408,9 @@
     Backendless._ajax = isBrowser() ? Backendless._ajax_for_browser : Backendless._ajax_for_nodejs;
 
     var getClassName = function () {
+        if (this.prototype && this.prototype.___class)
+            return this.prototype.___class;
+
         var instStringified = (Utils.isFunction(this) ? this.toString() : this.constructor.toString()),
             results = instStringified.match(/function\s+(\w+)/);
         return (results && results.length > 1) ? results[1] : '';
@@ -454,6 +462,9 @@
             if (source[property] !== undefined && source.hasOwnProperty(property)) {
                 destination[property] = destination[property] || {};
                 destination[property] = classWrapper(source[property]);
+                if (destination[property] && destination[property].hasOwnProperty(property) && destination[property][property] && destination[property][property].hasOwnProperty("__originSubID")) {
+                    destination[property][property] = classWrapper(destination[property]);
+                }
             }
         }
         return destination;
@@ -715,7 +726,7 @@
                 }
                 params.push('pageSize=' + encodeURIComponent(options.pageSize));
             }
-            if (options.offset) {
+            if (typeof options.offset != 'undefined') {
                 if (options.offset < 0) {
                     throw new Error('Offset can not be less then 0');
                 }
@@ -753,6 +764,10 @@
             var i, len, _Model = this.model, item;
             response = response.fields || response;
             item = new _Model;
+
+            if (!isBrowser())
+                response = JSON.parse(response);
+
             extendCollection(response, this);
             deepExtend(item, response);
             return this._formCircDeps(item);
@@ -779,7 +794,7 @@
 
         },
         _load: function (url, async) {
-            if(url) {
+            if (url) {
                 var responder = extractResponder(arguments), isAsync = false;
                 if (responder != null) {
                     isAsync = true;
@@ -824,6 +839,7 @@
         _formCircDeps: function (obj) {
             var circDepsIDs = {},
                 result = new obj.constructor(),
+            //result = Object.create( obj.constructor.prototype );
                 _formCircDepsHelper = function (obj, result) {
                     if (obj.hasOwnProperty("__subID")) {
                         circDepsIDs[obj["__subID"]] = result;
@@ -871,7 +887,7 @@
             return isAsync ? result : this._parseResponse(result);
         },
         remove: function (objId, async) {
-            if(!Utils.isObject(objId) && !Utils.isString(objId)){
+            if (!Utils.isObject(objId) && !Utils.isString(objId)) {
                 throw new Error('Invalid value for the "value" argument. The argument must contain only string or object values');
             }
             var responder = extractResponder(arguments), isAsync = false;
@@ -880,7 +896,7 @@
                 responder = this._wrapAsync(responder);
             }
             var result;
-            if(Utils.isString(objId) || objId.objectId){
+            if (Utils.isString(objId) || objId.objectId) {
                 objId = objId.objectId || objId;
                 result = Backendless._ajax({
                     method: 'DELETE',
@@ -892,7 +908,7 @@
                 result = Backendless._ajax({
                     method: 'DELETE',
                     url: this.restUrl,
-                    data:JSON.stringify(objId),
+                    data: JSON.stringify(objId),
                     isAsync: isAsync,
                     asyncHandler: responder
                 });
@@ -971,24 +987,24 @@
 
         findById: function () {
             var argsObj;
-            if(Utils.isString(arguments[0])){
+            if (Utils.isString(arguments[0])) {
                 argsObj = this._buildArgsObject.apply(this, arguments);
                 if (!(argsObj.url)) {
                     throw new Error('missing argument "object ID" for method findById()');
                 }
                 return this.find.apply(this, [argsObj].concat(Array.prototype.slice.call(arguments)));
-            } else if(Utils.isObject(arguments[0])) {
+            } else if (Utils.isObject(arguments[0])) {
                 argsObj = arguments[0];
                 var responder = extractResponder(arguments),
                     url = this.restUrl,
                     isAsync = responder != null,
                     send = "/pk?";
-                for(var key in argsObj){
+                for (var key in argsObj) {
                     send += key + '=' + argsObj[key] + '&';
                 }
                 responder != null && (responder = this._wrapAsync(responder));
                 var result;
-                if(getClassName.call(arguments[0]) == 'Object') {
+                if (getClassName.call(arguments[0]) == 'Object') {
                     result = Backendless._ajax({
                         method: 'GET',
                         url: url + send.replace(/&$/, ""),
@@ -999,7 +1015,7 @@
                     result = Backendless._ajax({
                         method: 'PUT',
                         url: url,
-                        data:JSON.stringify(argsObj),
+                        data: JSON.stringify(argsObj),
                         isAsync: isAsync,
                         asyncHandler: responder
                     });
@@ -1073,7 +1089,63 @@
                 return new DataStore(className).save(className, obj, async);
             }
         },
+        getView: function (viewName, whereClause, pageSize, offset, async) {
+            var responder = extractResponder(arguments),
+                isAsync = responder != null;
+
+            if (Utils.isString(viewName)) {
+                var url = Backendless.appPath + '/data/' + viewName;
+
+                if((arguments.length > 1) && !(arguments[1] instanceof Backendless.Async))
+                    url +='?';
+                if (Utils.isString(whereClause)) {
+                    url += 'where=' + whereClause;
+                } else {
+                    pageSize = whereClause;
+                    offset = pageSize;
+                }
+                if(Utils.isNumber(pageSize))
+                    url += '&' + new DataStore()._extractQueryOptions({
+                        pageSize: pageSize
+                    });
+                if(Utils.isNumber(offset))
+                    url += '&' + new DataStore()._extractQueryOptions({
+                        offset: offset
+                    });
+
+
+                return  Backendless._ajax({
+                    method: 'GET',
+                    url: url,
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                });
+            } else
+                throw new Error('View name is required string parameter');
+        },
+        callStoredProcedure: function (spName, argumentValues, async) {
+            var responder = extractResponder(arguments),
+                isAsync = responder != null;
+
+            if (Utils.isString(spName)) {
+                var url = Backendless.appPath + '/data/' + spName,
+                    data = {};
+
+                if (Utils.isObject(argumentValues))
+                    data = JSON.stringify(argumentValues);
+
+                return Backendless._ajax({
+                    method: 'POST',
+                    url: url,
+                    data: data,
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                });
+            } else
+                throw new Error('Stored Procedure name is required string parameter');
+        },
         of: function (model) {
+            //var className = ( model.prototype && model.prototype.___class ? model.prototype.___class : getClassName.call(model) );
             var className = getClassName.call(model);
             var store = dataStoreCache[className];
             if (!store) {
@@ -1099,9 +1171,12 @@
     function User() {
     }
 
-    User.prototype = {
-        ___class: "Users"
-    };
+    //User.prototype = {
+    //    ___class: "Users"
+    //};
+
+    User.prototype.___class = "Users";
+
     Backendless.User = User;
 
     var currentUser = null;
@@ -1208,7 +1283,8 @@
             if (!password) {
                 throw new Error('Password can not be empty');
             }
-
+            Backendless.LocalCache.remove("user-token");
+            Backendless.LocalCache.remove("current-user-id");
             Backendless.LocalCache.set("stayLoggedIn", false);
             if (Utils.isBoolean(stayLoggedIn)) {
                 Backendless.LocalCache.set("stayLoggedIn", stayLoggedIn);
@@ -1231,22 +1307,25 @@
                 asyncHandler: responder,
                 data: JSON.stringify(data)
             });
-            if (isAsync) {
+            if (isAsync)
                 return result;
-            }
-            else {
-                currentUser = this._parseResponse(result);
-                return this._getUserFromResponse(currentUser);
-            }
+
+            currentUser = this._parseResponse(result);
+
+            return this._getUserFromResponse(currentUser);
+
+
         },
+
         _getUserFromResponse: function (user) {
+            Backendless.LocalCache.set("current-user-id", user.objectId );
+
             var newUser = new Backendless.User();
             for (var i in user) {
                 if (user.hasOwnProperty(i)) {
                     if (i == 'user-token') {
                         if (Backendless.LocalCache.get("stayLoggedIn")) {
                             Backendless.LocalCache.set("user-token", user[i]);
-                            Backendless.LocalCache.set("current-user", user);
                         }
                         continue;
                     }
@@ -1255,6 +1334,11 @@
             }
             return newUser
         },
+
+        loggedInUser: function () {
+            return Backendless.LocalCache.get("current-user-id");
+        },
+
         describeUserClass: function (async) {
             var responder = extractResponder(arguments);
             var isAsync = responder != null;
@@ -1289,7 +1373,7 @@
                 successCallback = isAsync ? responder.success : null,
                 logoutUser = function () {
                     Backendless.LocalCache.remove("user-token");
-                    Backendless.LocalCache.remove("current-user");
+                    Backendless.LocalCache.remove("current-user-id");
                     currentUser = null;
                 },
                 onLogoutSuccess = function () {
@@ -1330,16 +1414,12 @@
             }
         },
         getCurrentUser: function () {
-            if(Backendless.LocalCache.get("current-user")){
-                return Backendless.LocalCache.get("current-user");
-            } else {
-                return currentUser ? this._getUserFromResponse(currentUser) : null;
-            }
+            return currentUser ? this._getUserFromResponse(currentUser) : null;
         },
         update: function (user, async) {
-            if (!(user instanceof Backendless.User)) {
-                throw new Error('Only Backendless.User accepted');
-            }
+            //if (!(user instanceof Backendless.User)) {
+            //    throw new Error('Only Backendless.User accepted');
+            //}
             var responder = extractResponder(arguments);
             var isAsync = responder != null;
             if (responder) {
@@ -1356,6 +1436,9 @@
         },
         loginWithFacebook: function (facebookFieldsMapping, permissions, callback, container) {
             this._loginSocial('Facebook', facebookFieldsMapping, permissions, callback, container);
+        },
+        loginWithGooglePlus: function (googlePlusFieldsMapping, permissions, callback, container) {
+            this._loginSocial('GooglePlus', googlePlusFieldsMapping, permissions, callback, container);
         },
         loginWithTwitter: function (twitterFieldsMapping, callback) {
             this._loginSocial('Twitter', twitterFieldsMapping, null, callback, null);
@@ -1470,35 +1553,44 @@
             var me = this;
             FB.getLoginStatus(function (response) {
                 if (response.status === 'connected')
-                    me._sendFacebookLoginRequest(me, response, fieldsMapping, async);
+                    me._sendSocialLoginRequest(me, response, "facebook", fieldsMapping, async);
                 else
                     FB.login(function (response) {
-                        me._sendFacebookLoginRequest(me, response, fieldsMapping, async);
+                        me._sendSocialLoginRequest(me, response, "facebook", fieldsMapping, async);
                     });
             });
         },
-        _sendFacebookLoginRequest: function (context, response, fieldsMapping, async) {
-            if (response.status === 'connected') {
-                var requestData = response.authResponse;
+        loginWithGooglePlusSdk: function (fieldsMapping, async) {
+            if (!gapi)
+                throw new Error("Google Plus SDK not found");
 
-                if (fieldsMapping)
-                    requestData["fieldsMapping"] = fieldsMapping;
+            var me = this;
+            gapi.auth.authorize({
+                client_id: fieldsMapping.client_id,
+                scope: "https://www.googleapis.com/auth/plus.login"
+            }, function (response) {
+                delete response['g-oauth-window'];
+                me._sendSocialLoginRequest(me, response, "googleplus", fieldsMapping, async);
+            });
+        },
+        _sendSocialLoginRequest: function (context, response, socialType, fieldsMapping, async) {
+            if (fieldsMapping)
+                response["fieldsMapping"] = fieldsMapping;
 
-                var interimCallback = new Backendless.Async(function (r) {
-                    currentUser = context._parseResponse(r);
-                    async.success(context._getUserFromResponse(currentUser));
-                }, function (e) {
-                    async.fault(e);
-                });
+            var interimCallback = new Backendless.Async(function (r) {
+                currentUser = context._parseResponse(r);
+                async.success(context._getUserFromResponse(currentUser));
+            }, function (e) {
+                async.fault(e);
+            });
 
-                Backendless._ajax({
-                    method: 'POST',
-                    url: context.restUrl + "/social/facebook/login/" + Backendless.applicationId,
-                    isAsync: true,
-                    asyncHandler: interimCallback,
-                    data: JSON.stringify(requestData)
-                });
-            }
+            Backendless._ajax({
+                method: 'POST',
+                url: context.restUrl + "/social/" + socialType + "/login/" + Backendless.applicationId,
+                isAsync: true,
+                asyncHandler: interimCallback,
+                data: JSON.stringify(response)
+            });
         },
         isValidLogin: function (async) {
             var userToken = "",
@@ -1510,7 +1602,7 @@
             }
             if (cache.get("user-token")) {
                 userToken = cache.get("user-token");
-                if(!async) {
+                if (!async) {
                     try {
                         var result = Backendless._ajax({
                             method: 'GET',
@@ -1537,6 +1629,7 @@
 
     function Geo() {
         this.restUrl = Backendless.appPath + '/geo';
+        this.monitoringId = null;
     }
 
     Geo.prototype = {
@@ -1630,11 +1723,14 @@
             'condition': function (arg) {
                 return 'whereClause=' + encodeURIComponent(arg);
             },
-            'degreePerPixel': function (arg){
+            'degreePerPixel': function (arg) {
                 return 'dpp=' + arg;
             },
-            'clusterGridSize': function(arg){
+            'clusterGridSize': function (arg) {
                 return 'clustergridsize=' + arg;
+            },
+            'geoFence': function (arg) {
+                return 'geoFence=' + arg;
             }
         },
 
@@ -1646,7 +1742,7 @@
             geopoint.categories = Utils.isArray(geopoint.categories) ? geopoint.categories : [geopoint.categories];
 
             var responder = extractResponder(arguments);
-            var responderOverride = function(async){
+            var responderOverride = function (async) {
                 var success = function (data) {
                     var geoObject = data.geopoint;
                     var geoPoint = new GeoPoint();
@@ -1705,17 +1801,17 @@
             }
             url = url.replace(/\?&/g, '?');
             var self = this;
-            var responderOverride = function(async){
+            var responderOverride = function (async) {
                 var success = function (data) {
                     var geoCollection = data.collection.data;
-                    for(var i = 0; i < geoCollection.length; i++){
+                    for (var i = 0; i < geoCollection.length; i++) {
                         var geoObject = null;
-                        if(geoCollection[i].hasOwnProperty('totalPoints')){
+                        if (geoCollection[i].hasOwnProperty('totalPoints')) {
                             geoObject = new GeoCluster();
                             geoObject.totalPoints = geoCollection[i].totalPoints;
                             geoObject.geoQuery = query;
                         }
-                        else{
+                        else {
                             geoObject = new GeoPoint();
                         }
                         geoObject.categories = geoCollection[i].categories;
@@ -1751,9 +1847,11 @@
             return this.findUtil(query, async);
         },
 
-        loadMetadata: function(geoObject){
-            var url = this.restUrl + '/points/';
-            if(geoObject.objectId) {
+        loadMetadata: function (geoObject, async) {
+            var url = this.restUrl + '/points/',
+                responder = extractResponder(arguments),
+                isAsync = false;
+            if (geoObject.objectId) {
                 if (geoObject instanceof GeoCluster) {
                     if (geoObject.geoQuery instanceof BackendlessGeoQuery) {
                         url += geoObject.objectId + '/metadata?';
@@ -1779,11 +1877,79 @@
             else {
                 throw new Error("Method argument must be a valid instance of GeoPoint or GeoCluster persisted on the server");
             }
+
+            if (responder != null) {
+                isAsync = true;
+            }
+
+            return Backendless._ajax({
+                method: 'GET',
+                url: url,
+                isAsync: isAsync,
+                asyncHandler: responder
+            });
+        },
+
+        getClusterPoints: function (geoObject, async) {
+            var url = this.restUrl + '/clusters/',
+                responder = extractResponder(arguments),
+                isAsync = false;
+            if (geoObject.objectId) {
+                if (geoObject instanceof GeoCluster) {
+                    if (geoObject.geoQuery instanceof BackendlessGeoQuery) {
+                        url += geoObject.objectId + '/points?';
+                        for (var prop in geoObject.geoQuery) {
+                            {
+                                if (geoObject.geoQuery.hasOwnProperty(prop) && this._findHelpers.hasOwnProperty(prop) && geoObject.geoQuery[prop] != undefined) {
+                                    url += '&' + this._findHelpers[prop](geoObject.geoQuery[prop]);
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        throw new Error("Invalid GeoCluster object. Make sure to obtain an instance of GeoCluster using the Backendless.Geo.find API");
+                    }
+                }
+                else {
+                    throw new Error("Method argument must be a valid instance of GeoCluster persisted on the server");
+                }
+            }
+            else {
+                throw new Error("Method argument must be a valid instance of GeoCluster persisted on the server");
+            }
+            var self = this;
+            var responderOverride = function (async) {
+                var success = function (data) {
+                    var geoCollection = data.collection.data;
+                    for (var i = 0; i < geoCollection.length; i++) {
+                        var geoObject = null;
+                        geoObject = new GeoPoint();
+                        geoObject.categories = geoCollection[i].categories;
+                        geoObject.latitude = geoCollection[i].latitude;
+                        geoObject.longitude = geoCollection[i].longitude;
+                        geoObject.metadata = geoCollection[i].metadata;
+                        geoObject.objectId = geoCollection[i].objectId;
+                        data.collection.data[i] = geoObject;
+                    }
+                    data = self._parseResponse(data);
+                    async.success(data);
+                };
+                var error = function (data) {
+                    async.fault(data);
+                };
+                return new Async(success, error);
+            };
+            if (responder != null) {
+                isAsync = true;
+            }
+            responder = responderOverride(responder);
             var result = Backendless._ajax({
                 method: 'GET',
-                url: url
+                url: url,
+                isAsync: isAsync,
+                asyncHandler: responder
             });
-            return result;
+            return isAsync ? result : this._parseResponse(result);
         },
 
         relativeFind: function (query, async) {
@@ -1865,6 +2031,390 @@
                 }
             }
             return (typeof result.result === 'undefined') ? result : result.result;
+        },
+        getFencePoints: function (geoFenceName, query, async) {
+            var query = query || new BackendlessGeoQuery();
+            if (!Utils.isString(geoFenceName)) {
+                throw new Error("Invalid value for parameter 'geoFenceName'. Geo Fence Name must be a String");
+            }
+            if (!(query instanceof BackendlessGeoQuery)) {
+                throw new Error("Invalid geo query. Query should be instance of BackendlessGeoQuery");
+            }
+            query["geoFence"] = geoFenceName;
+            query["url"] = this.restUrl;
+            return this.findUtil(query, async);
+        },
+        _runFenceAction: function (action, geoFenceName, geoPoint, async) {
+            if (!Utils.isString(geoFenceName)) {
+                throw new Error("Invalid value for parameter 'geoFenceName'. Geo Fence Name must be a String");
+            }
+            if (geoPoint && !(geoPoint instanceof Backendless.Async) && !(geoPoint instanceof GeoPoint) && !geoPoint.objectId) {
+                throw new Error("Method argument must be a valid instance of GeoPoint persisted on the server")
+            }
+            var responder = extractResponder(arguments),
+                isAsync = responder != null,
+                data = {
+                    method: 'POST',
+                    url: this.restUrl + '/fence/' + action + '?geoFence=' + geoFenceName,
+                    isAsync: isAsync,
+                    asyncHandler: responder
+                };
+            if (geoPoint) {
+                data.data = JSON.stringify(geoPoint);
+            }
+            return Backendless._ajax(data);
+        },
+        runOnStayAction: function (geoFenceName, geoPoint, async) {
+            return this._runFenceAction('onstay', geoFenceName, geoPoint, async);
+        },
+        runOnExitAction: function (geoFenceName, geoPoint, async) {
+            return this._runFenceAction('onexit', geoFenceName, geoPoint, async);
+        },
+        runOnEnterAction: function (geoFenceName, geoPoint, async) {
+            return this._runFenceAction('onenter', geoFenceName, geoPoint, async);
+        },
+        _getFences: function (geoFence) {
+            return Backendless._ajax({
+                method: 'GET',
+                url: this.restUrl + '/fences' + ((geoFence) ? '?geoFence=' + geoFence : '')
+            });
+        },
+        EARTH_RADIUS: 6378100.0,
+        _distance: function (lat1, lon1, lat2, lon2) {
+            var deltaLon = lon1 - lon2;
+            deltaLon = (deltaLon * Math.PI) / 180;
+            lat1 = (lat1 * Math.PI) / 180;
+            lat2 = (lat2 * Math.PI) / 180;
+            return this.EARTH_RADIUS * Math.acos(Math.sin(lat1) * Math.sin(lat2) + Math.cos(lat1) * Math.cos(lat2) * Math.cos(deltaLon));
+        },
+        _updateDegree: function (degree) {
+            degree += 180;
+            while (degree < 0) {
+                degree += 360;
+            }
+            return degree == 0 ? 180 : degree % 360 - 180;
+        },
+        _countLittleRadius: function (latitude) {
+            var h = Math.abs(latitude) / 180 * this.EARTH_RADIUS;
+            var diametre = 2 * this.EARTH_RADIUS;
+            var l_2 = (Math.pow(diametre, 2) - diametre * Math.sqrt(Math.pow(diametre, 2) - 4 * Math.pow(h, 2))) / 2;
+            return diametre / 2 - Math.sqrt(l_2 - Math.pow(h, 2));
+        },
+        _isDefiniteRect: function (nwPoint, sePoint) {
+            return nwPoint != null && sePoint != null;
+        },
+        _getOutRectangle: function () {
+            return (arguments.length == 1) ? this._getOutRectangleNodes(arguments[1]) : this._getOutRectangleCircle(arguments[0], arguments[1]);
+        },
+        _getOutRectangleCircle: function (center, bounded) {
+            var radius = this._distance(center.latitude, center.longitude, bounded.latitude, bounded.longitude);
+            var boundLat = center.latitude + (180 * radius) / (Math.PI * this.EARTH_RADIUS) * (center.latitude > 0 ? 1 : -1);
+            var littleRadius = this._countLittleRadius(boundLat);
+            var westLong, eastLong, northLat, southLat;
+
+            if (littleRadius > radius) {
+                westLong = center.longitude - (180 * radius) / littleRadius;
+                eastLong = 2 * center.longitude - westLong;
+
+                westLong = this._updateDegree(westLong);
+                eastLong = eastLong % 360 == 180 ? 180 : this._updateDegree(eastLong);
+            } else {
+                westLong = -180;
+                eastLong = 180;
+            }
+
+            if (center.latitude > 0) {
+                northLat = boundLat;
+                southLat = 2 * center.latitude - boundLat;
+            } else {
+                southLat = boundLat;
+                northLat = 2 * center.latitude - boundLat;
+            }
+
+            return [Math.min(northLat, 90), westLong, Math.max(southLat, -90), eastLong];
+        },
+        _getOutRectangleNodes: function (geoPoints) {
+            var nwLat = geoPoints[0].latitude;
+            var nwLon = geoPoints[0].longitude;
+            var seLat = geoPoints[0].latitude;
+            var seLon = geoPoints[0].longitude;
+            var minLon = 0, maxLon = 0, lon = 0;
+
+            for (var i = 1; i < geoPoints.length; i++) {
+                if (geoPoints[i].latitude > nwLat) {
+                    nwLat = geoPoints[i].latitude;
+                }
+
+                if (geoPoints[i].latitude < seLat) {
+                    seLat = geoPoints[i].latitude;
+                }
+
+                var deltaLon = geoPoints[i].latitude - geoPoints[i - 1].latitude;
+
+                if (deltaLon < 0 && deltaLon > -180 || deltaLon > 270) {
+                    if (deltaLon > 270)
+                        deltaLon -= 360;
+                    lon += deltaLon;
+
+                    if (lon < minLon)
+                        minLon = lon;
+                } else if (deltaLon > 0 && deltaLon <= 180 || deltaLon <= -270) {
+                    if (deltaLon <= -270)
+                        deltaLon += 360;
+                    lon += deltaLon;
+
+                    if (lon > maxLon)
+                        maxLon = lon;
+                }
+            }
+            nwLon += minLon;
+            seLon += maxLon;
+
+            if (seLon - nwLon >= 360) {
+                seLon = 180;
+                nwLon = -180;
+            } else {
+                seLon = this._updateDegree(seLon);
+                nwLon = this._updateDegree(nwLon);
+            }
+
+            return [nwLat, nwLon, seLat, seLon];
+        },
+        _getPointPosition: function (point, first, second) {
+            var delta = second.longitude - first.longitude;
+            if (delta < 0 && delta > -180 || delta > 180) {
+                var tmp = first;
+                first = second;
+                second = tmp;
+            }
+
+            if (point.latitude < first.latitude == point.latitude < second.latitude) {
+                return 'NO_INTERSECT';
+            }
+
+            var x = point.longitude - first.longitude;
+            if (x < 0 && x > -180 || x > 180) {
+                x = (x - 360) % 360;
+            }
+            var x2 = (second.longitude - first.longitude + 360) % 360;
+            var result = x2 * (point.latitude - first.latitude) / (second.latitude - first.latitude) - x;
+
+            if (result > 0) {
+                return 'INTERSECT';
+            }
+
+            return 'NO_INTERSECT';
+        },
+        _isPointInRectangular: function (currentPosition, nwPoint, sePoint) {
+            if (currentPosition.latitude > nwPoint.latitude || currentPosition.latitude < sePoint.latitude) {
+                return false;
+            }
+            if (nwPoint.longitude > sePoint.longitude) {
+                return currentPosition.longitude >= nwPoint.longitude || currentPosition.longitude <= sePoint.longitude;
+            } else {
+                return currentPosition.longitude >= nwPoint.longitude && currentPosition.longitude <= sePoint.longitude;
+            }
+        },
+        _isPointInCircle: function (currentPosition, center, radius) {
+            return this._distance(currentPosition.latitude, currentPosition.longitude, center.latitude, center.longitude) <= radius;
+        },
+        _isPointInShape: function (point, shape) {
+            var count = 0;
+
+            function getIndex(i, shape) {
+                return (i + 1) % shape.length;
+            }
+
+            for (var i = 0; i < shape.length; i++) {
+                var position = this._getPointPosition(point, shape[i], shape[getIndex(i, shape)]);
+                switch (position) {
+                    case 'INTERSECT':
+                    {
+                        count++;
+                        break;
+                    }
+                    case 'ON_LINE':
+                    case 'NO_INTERSECT':
+                    default:
+                        break;
+                }
+            }
+            return count % 2 == 1;
+        },
+        _isPointInFence: function (geoPoint, geoFence) {
+            return this._isPointInRectangular(geoPoint, geoFence.nwPoint, geoFence.sePoint)
+                || geoFence.type == 'CIRCLE' && this._isPointInCircle(geoPoint, geoFence.nodes[0], this._distance(geoFence.nodes[0].latitude, geoFence.nodes[0].longitude, geoFence.nodes[1].latitude, geoFence.nodes[1].longitude))
+                || geoFence.type == 'SHAPE' && this._isPointInShape(geoPoint, geoFence.nodes);
+        },
+        _typesMapper: {
+            'RECT': function (fence) {
+                fence.nwPoint = fence.nodes[0];
+                fence.sePoint = fence.nodes[1];
+            },
+            'CIRCLE': function (fence, self) {
+                var outRect = self._getOutRectangle(fence.nodes[0], fence.nodes[1]);
+                fence.nwPoint = {latitude: outRect[0], longitude: outRect[1]};
+                fence.sePoint = {latitude: outRect[2], longitude: outRect[3]};
+            },
+            'SHAPE': function (fence, self) {
+                var outRect = self._getOutRectangle(fence.nodes[0], fence.nodes[1]);
+                fence.nwPoint = {latitude: outRect[0], longitude: outRect[1]};
+                fence.sePoint = {latitude: outRect[2], longitude: outRect[3]};
+            }
+        },
+        _maxDuration: 5000,
+        _timers: {},
+        _checkPosition: function (geofenceName, coords, fences, geoPoint, GeoFenceCallback, lastResults, async) {
+            var self = this;
+            for (var k = 0; k < self._trackedFences.length; k++) {
+                var isInFence = self._isDefiniteRect(self._trackedFences[k].nwPoint, self._trackedFences[k].sePoint) && self._isPointInFence(coords, self._trackedFences[k]),
+                    rule = null;
+                if (isInFence != lastResults[self._trackedFences[k].geofenceName]) {
+                    if (lastResults[self._trackedFences[k].geofenceName]) {
+                        rule = 'onexit';
+                    } else {
+                        rule = 'onenter';
+                    }
+                    lastResults[self._trackedFences[k].geofenceName] = isInFence;
+                }
+                if (rule) {
+                    var duration = self._trackedFences[k].onStayDuration * 1000,
+                        timeoutFuncInApp = function (savedK, savedCoords, duration) {
+                            var callBack = function () {
+                                GeoFenceCallback['onstay'](self._trackedFences[savedK].geofenceName, self._trackedFences[savedK].objectId, savedCoords.latitude, savedCoords.longitude);
+                            };
+                            self._timers[self._trackedFences[savedK].geofenceName] = setTimeout(callBack, duration);
+                        },
+                        timeoutFuncRemote = function (savedK, savedCoords, duration, geoPoint) {
+                            var callBack = function () {
+                                self._runFenceAction('onstay', self._trackedFences[savedK].geofenceName, geoPoint, async);
+                            };
+                            self._timers[self._trackedFences[savedK].geofenceName] = setTimeout(callBack, duration);
+                        };
+                    if (GeoFenceCallback) {
+                        if (rule == 'onenter') {
+                            GeoFenceCallback[rule](self._trackedFences[k].geofenceName, self._trackedFences[k].objectId, coords.latitude, coords.longitude);
+                            if (duration > -1) {
+                                (function (k, coords, duration) {
+                                    return timeoutFuncInApp(k, coords, duration)
+                                })(k, coords, duration);
+                            } else {
+                                GeoFenceCallback['onstay'](self._trackedFences[k].geofenceName, self._trackedFences[k].objectId, coords.latitude, coords.longitude);
+                            }
+                        } else {
+                            clearTimeout(self._timers[self._trackedFences[k].geofenceName]);
+                            GeoFenceCallback[rule](self._trackedFences[k].geofenceName, self._trackedFences[k].objectId, coords.latitude, coords.longitude);
+                        }
+                    } else if (geoPoint) {
+                        geoPoint.latitude = coords.latitude;
+                        geoPoint.longitude = coords.longitude;
+                        if (rule == 'onenter') {
+                            self._runFenceAction(rule, self._trackedFences[k].geofenceName, geoPoint, async);
+                            if (duration > -1) {
+                                (function (k, coords, duration, geoPoint) {
+                                    return timeoutFuncRemote(k, coords, duration, geoPoint)
+                                })(k, coords, duration, geoPoint);
+                            } else {
+                                self._runFenceAction('onstay', self._trackedFences[k].geofenceName, geoPoint, async);
+                            }
+                        } else {
+                            clearTimeout(self._timers[self._trackedFences[k].geofenceName]);
+                            self._runFenceAction(rule, self._trackedFences[k].geofenceName, geoPoint, async);
+                        }
+                    }
+                }
+            }
+        },
+        _mobilecheck: function () {
+            var check = false;
+            (function (a) {
+                if (/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test(a) || /1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(a.substr(0, 4)))check = true
+            })(navigator.userAgent || navigator.vendor || window.opera);
+            return check;
+        },
+        _trackedFences: [],
+        _lastResults: {},
+        _startMonitoring: function (geofenceName, secondParam, async) {
+            var self = this;
+            if (secondParam instanceof GeoPoint)
+                var isGeoPoint = true;
+            var fences = this._getFences(geofenceName);
+            for (var ii = 0; ii < fences.length; ii++) {
+                if (!_containsByPropName(self._trackedFences, fences[ii], "geofenceName")) {
+                    self._typesMapper[fences[ii].type](fences[ii], self);
+                    self._lastResults[fences[ii].geofenceName] = false;
+                    self._trackedFences.push(fences[ii]);
+                } else {
+                    //console.warn(fences[ii].geofenceName + ' cannot be tracked again. This fence is already tracked');
+                }
+            }
+
+            function _containsByPropName(collection, object, name) {
+                var length = collection.length,
+                    result = false;
+                for (var i = 0; i < length; i++) {
+                    if (result = collection[i][name] === object[name]) {
+                        break;
+                    }
+                }
+                return result;
+            }
+
+            function getPosition(position) {
+                self._checkPosition(geofenceName, position.coords, fences, (isGeoPoint) ? secondParam : null, (!isGeoPoint) ? secondParam : null, self._lastResults, async);
+            }
+
+            function errorCallback(error) {
+                throw new Error('Error during current position calculation. Error ' + error.message);
+            }
+
+            function getCurPos() {
+                navigator.geolocation.getCurrentPosition(getPosition, errorCallback, {
+                    timeout: 5000,
+                    enableHighAccuracy: true
+                });
+            }
+
+            if (!this.monitoringId) {
+                if (fences.length) {
+                    this.monitoringId = (!this._mobilecheck()) ? setInterval(getCurPos, self._maxDuration) : navigator.geolocation.watchPosition(getPosition, errorCallback, {
+                        timeout: self._maxDuration,
+                        enableHighAccuracy: true
+                    });
+                } else {
+                    throw new Error("Please, add some fences to start monitoring");
+                }
+            }
+        },
+        startGeofenceMonitoringWithInAppCallback: function (geofenceName, inAppCallback, async) {
+            this._startMonitoring(geofenceName, inAppCallback, async);
+        },
+        startGeofenceMonitoringWithRemoteCallback: function (geofenceName, geoPoint, async) {
+            this._startMonitoring(geofenceName, geoPoint, async);
+        },
+        stopGeofenceMonitoring: function (geofenceName) {
+            var self = this;
+            //removed = [];
+            if (geofenceName) {
+                for (var i = 0; i < self._trackedFences.length; i++) {
+                    if (self._trackedFences[i].geofenceName == geofenceName) {
+                        self._trackedFences.splice(i, 1);
+                        delete self._lastResults[geofenceName];
+                        //removed.push(geofenceName);
+                    }
+                }
+            } else {
+                //for (var ii = 0; ii < self._trackedFences.length; ii++) {
+                //    removed.push(self._trackedFences[ii].geofenceName)
+                //}
+                this._lastResuls = {};
+                this._trackedFences = [];
+            }
+            if (!self._trackedFences.length) {
+                self.monitoringId = null;
+                (!self._mobilecheck()) ? clearInterval(self.monitoringId) : navigator.geolocation.clearWatch(self.monitoringId);
+            }
+            //removed.length ? console.info('Removed fences: ' + removed.join(", ")) : console.info('No fences are tracked');
         }
     };
 
@@ -2219,7 +2769,7 @@
             var fail = function (status) {
                 console.warn(JSON.stringify(['failed to register ', status]));
             };
-            var config = { projectid: "http://backendless.com", appid: Backendless.applicationId };
+            var config = {projectid: "http://backendless.com", appid: Backendless.applicationId};
             cordova.exec(success, fail, "PushNotification", "registerDevice", [config]);
         },
         getRegistrations: function (async) {
@@ -2327,7 +2877,7 @@
         }
     }
 
-    function sendEncoded(e){
+    function sendEncoded(e) {
         var xhr = new XMLHttpRequest(),
             boundary = '-backendless-multipart-form-boundary-' + getNow(),
             builder = getBuilder(this.fileName, e.target.result, boundary),
@@ -2373,12 +2923,60 @@
         }
     }
 
+    function FilePermissions() {
+        this.restUrl = Backendless.appPath + '/files/permissions';
+    }
+
+    FilePermissions.prototype = {
+        grantUser: function (userid, url, permissionType, async) {
+            this.varType = 'user';
+            this.id = userid;
+            return this.grant(url, permissionType, async);
+        },
+        grantRole: function (rolename, url, permissionType, async) {
+            this.varType = 'role';
+            this.id = rolename;
+            return this.grant(url, permissionType, async);
+        },
+        grant: function (url, permissionType, async) {
+            return this.sendRequest('GRANT', url, permissionType, async);
+        },
+        denyUser: function (rolename, url, permissionType, async) {
+            this.varType = 'role';
+            this.id = rolename;
+            return this.deny(url, permissionType, async);
+        },
+        denyRole: function (rolename, url, permissionType, async) {
+            this.varType = 'role';
+            this.id = rolename;
+            return this.deny(url, permissionType, async);
+        },
+        deny: function (url, permissionType, async) {
+            return this.sendRequest('DENY', url, permissionType, async);
+        },
+        sendRequest: function (type, url, permissionType, async) {
+            var responder = extractResponder(arguments),
+                isAsync = responder != null,
+                data = {
+                    "permission": permissionType
+                };
+            data[this.varType] = this.id || "*";
+            return Backendless._ajax({
+                method: 'PUT',
+                url: this.restUrl + '/' + type + '/' + encodeURIComponent(url),
+                data: JSON.stringify(data),
+                isAsync: isAsync,
+                asyncHandler: responder
+            });
+        }
+    };
+
     function Files() {
         this.restUrl = Backendless.appPath + '/files';
     }
 
     Files.prototype = {
-        saveFile: function(path, fileName, fileContent, overwrite, async){
+        saveFile: function (path, fileName, fileContent, overwrite, async) {
             if (!path || !Utils.isString(path))
                 throw new Error('Missing value for the "path" argument. The argument must contain a string value');
             if (!fileName || !Utils.isString(path))
@@ -2387,10 +2985,10 @@
                 async = overwrite;
                 overwrite = null;
             }
-            if(!(fileContent instanceof File)) {
+            if (!(fileContent instanceof File)) {
                 fileContent = new Blob([fileContent]);
             }
-            if(fileContent.size > 2800000){
+            if (fileContent.size > 2800000) {
                 throw new Error('File Content size must be less than 2,800,000 bytes');
             }
             var baseUrl = this.restUrl + '/binary/' + path + ((Utils.isString(fileName)) ? '/' + fileName : '') + ((overwrite) ? '?overwrite=true' : '');
@@ -2399,14 +2997,14 @@
                 reader.fileName = fileName;
                 reader.uploadPath = baseUrl;
                 reader.onloadend = sendEncoded;
-                if(async) {
+                if (async) {
                     reader.asyncHandler = async;
                 }
                 reader.onerror = function (evn) {
                     async.fault(evn);
                 };
                 reader.readAsDataURL(fileContent);
-                if(!async) {
+                if (!async) {
                     return true;
                 }
 
@@ -2414,9 +3012,13 @@
                 console.log(err);
             }
         },
-        upload: function (files, path, async) {
+        upload: function (files, path, overwrite, async) {
             files = files.files || files;
             var baseUrl = this.restUrl + '/' + path + '/';
+
+            if (Utils.isBoolean(overwrite))
+                var overwriting = "?overwrite=" + overwrite;
+
             if (isBrowser()) {
                 if (window.File && window.FileList) {
                     if (files instanceof File) {
@@ -2427,7 +3029,7 @@
                         try {
                             var reader = new FileReader();
                             reader.fileName = files[i].name;
-                            reader.uploadPath = baseUrl + reader.fileName;
+                            reader.uploadPath = baseUrl + reader.fileName + (overwriting ? overwriting : '');
                             reader.onloadend = send;
                             reader.asyncHandler = async;
                             reader.onerror = function (evn) {
@@ -2459,7 +3061,7 @@
                     if (index) {
                         fileName = fileName.substring(index + 1);
                     }
-                    form.action = baseUrl + fileName;
+                    form.action = baseUrl + fileName + (overwriting ? overwriting : '');
                     form.submit();
                 }
             }
@@ -2467,12 +3069,96 @@
                 throw "Upload File not supported with NodeJS";
             }
         },
+        listing: function (path, pattern, recursively, pagesize, offset, async) {
+            var responder = extractResponder(arguments),
+                isAsync = responder != null,
+                url = this.restUrl + '/' + path;
+
+            if ((arguments.length > 1) && !(arguments[1] instanceof Backendless.Async)) {
+                url +="?"
+            }
+            if (Utils.isString(pattern)) {
+                url += ("pattern=" + pattern)
+            }
+            if (Utils.isBoolean(recursively)) {
+                url += ("&sub=" + recursively)
+            }
+            if (Utils.isNumber(pagesize)) {
+                url += "&pagesize=" + pagesize;
+            }
+            if (Utils.isNumber(offset)) {
+                url += "&offset=" + offset;
+            }
+
+            return Backendless._ajax({
+                method: 'GET',
+                url: url,
+                isAsync: isAsync,
+                asyncHandler: responder
+            });
+        },
+        renameFile: function (oldPathName, newName, async) {
+            this._checkPath(oldPathName);
+            var parameters = {
+                oldPathName: oldPathName,
+                newName: newName
+            };
+            this._doAction("rename", parameters, async);
+        },
+        moveFile: function (sourcePath, targetPath, async) {
+            this._checkPath(sourcePath);
+            this._checkPath(targetPath);
+            var parameters = {
+                sourcePath: sourcePath,
+                targetPath: targetPath
+            };
+            this._doAction("move", parameters, async);
+        },
+        copyFile: function (sourcePath, targetPath, async) {
+            this._checkPath(sourcePath);
+            this._checkPath(targetPath);
+            var parameters = {
+                sourcePath: sourcePath,
+                targetPath: targetPath
+            };
+            this._doAction("copy", parameters, async);
+        },
+        _checkPath: function (path) {
+            if (!(/^\//).test(path))
+                path = "/" + path;
+
+            return path;
+        },
+        _doAction: function (actionType, parameters, async) {
+            var responder = extractResponder(arguments);
+            var isAsync = responder != null;
+            Backendless._ajax({
+                method: 'PUT',
+                url: this.restUrl + '/' + actionType,
+                data: JSON.stringify(parameters),
+                isAsync: isAsync,
+                asyncHandler: responder
+            });
+        },
         remove: function (fileURL, async) {
             var responder = extractResponder(arguments);
             var isAsync = responder != null;
             var url = fileURL.indexOf("http://") == 0 || fileURL.indexOf("https://") == 0 ? fileURL : this.restUrl + '/' + fileURL;
             Backendless._ajax({
                 method: 'DELETE',
+                url: url,
+                isAsync: isAsync,
+                asyncHandler: responder
+            });
+        },
+        exists: function(path, async) {
+            if (!path || !Utils.isString(path)) {
+                throw new Error('Missing value for the "path" argument. The argument must contain a string value'); }
+            var responder = extractResponder(arguments),
+                isAsync = responder != null,
+                url = this.restUrl + '/exists/' + path;
+            return Backendless._ajax({
+                method: 'GET',
                 url: url,
                 isAsync: isAsync,
                 asyncHandler: responder
@@ -2624,21 +3310,24 @@
         put: function (key, value, timeToLive, async) {
             if (!Utils.isString(key))
                 throw new Error('You can use only String as key to put into Cache');
-            if (timeToLive) {
+            if (!(timeToLive instanceof Backendless.Async)) {
                 if (typeof timeToLive == 'object' && !arguments[3]) {
                     async = timeToLive;
                     timeToLive = null;
                 } else if (typeof timeToLive != ('number' || 'string')) {
                     throw new Error('You can use only String as timeToLive attribute to put into Cache');
                 }
-            }
-            var responder = extractResponder([value, async]), isAsync = false;
-            if (responder != null) {
-                isAsync = true;
-                responder = this._wrapAsync(responder);
+            } else {
+                async = timeToLive;
+                timeToLive = null;
             }
             if (Utils.isObject(value) && value.constructor !== Object) {
                 value.___class = value.___class || getClassName.call(value);
+            }
+            var responder = extractResponder([async]), isAsync = false;
+            if (responder != null) {
+                isAsync = true;
+                responder = this._wrapAsync(responder);
             }
             var result = Backendless._ajax({
                 method: 'PUT',
@@ -2911,6 +3600,115 @@
         }
     };
 
+    Backendless.Logging = {
+        restUrl: this.url,
+        loggers: {},
+        logInfo: [],
+        messagesCount: 0,
+        numOfMessages: 10,
+        timeFrequency: 1,
+        getLogger: function (loggerName) {
+            if (!Utils.isString(loggerName)) {
+                throw new Error("Invalid 'loggerName' value. LoggerName must be a string value");
+            }
+            if (!this.loggers[loggerName]) {
+                this.loggers[loggerName] = new Logging(loggerName);
+            }
+            return this.loggers[loggerName];
+        },
+        flush: function () {
+            Backendless._ajax({
+                method: 'PUT',
+                url: Backendless.serverURL + '/' + Backendless.appVersion + '/log',
+                data: JSON.stringify(this.logInfo)
+            });
+            this.flushInterval && clearTimeout(this.flushInterval);
+            this.logInfo = [];
+            this.messagesCount = 0;
+        },
+        sendRequest: function () {
+            function request(info, time) {
+                function sendAjax() {
+                    Backendless._ajax({
+                        method: 'PUT',
+                        url: Backendless.serverURL + '/' + Backendless.appVersion + '/log',
+                        data: JSON.stringify(info)
+                    });
+                    this.messagesCount = 0;
+                }
+
+                this.flushInterval = setTimeout(sendAjax, time * 1000);
+            }
+
+            request(this.logInfo, this.timeFrequency);
+            this.logInfo = [];
+        },
+        checkMessagesLen: function () {
+            if (this.messagesCount > (this.numOfMessages - 1)) {
+                this.sendRequest();
+            }
+        },
+        setLogReportingPolicy: function (numOfMessages, timeFrequency) {
+            this.numOfMessages = numOfMessages;
+            this.timeFrequency = timeFrequency;
+            this.checkMessagesLen();
+        }
+    };
+
+    function Logging(name) {
+        this.name = name;
+    }
+
+    function setLogMessage(logger, logLevel, message, exception) {
+        var messageObj = {};
+        messageObj['message'] = message;
+        messageObj['timestamp'] = Date.now();
+        messageObj['exception'] = (exception) ? exception : null;
+        messageObj['logger'] = logger;
+        messageObj['log-level'] = logLevel;
+        Backendless.Logging.logInfo.push(messageObj);
+        Backendless.Logging.messagesCount++;
+        Backendless.Logging.checkMessagesLen();
+    }
+
+    Logging.prototype = {
+        debug: function (message) {
+            return setLogMessage(this.name, "DEBUG", message);
+        },
+        info: function (message) {
+            return setLogMessage(this.name, "INFO", message);
+        },
+        warn: function (message, exception) {
+            return setLogMessage(this.name, "WARN", message, exception);
+        },
+        error: function (message, exception) {
+            return setLogMessage(this.name, "ERROR", message, exception);
+        },
+        fatal: function (message, exception) {
+            return setLogMessage(this.name, "FATAL", message, exception);
+        },
+        trace: function (message) {
+            return setLogMessage(this.name, "TRACE", message);
+        }
+    };
+
+    function CustomServices() {
+    }
+
+    CustomServices.prototype = {
+        invoke: function (serviceName, serviceVersion, method, parameters, async) {
+            var responder = extractResponder(arguments),
+                isAsync = responder != null;
+
+            return Backendless._ajax({
+                method: "POST",
+                url: Backendless.serverURL + '/' + Backendless.appVersion + '/services/' + serviceName + '/' + serviceVersion + '/' + method,
+                data: JSON.stringify(parameters),
+                isAsync: isAsync,
+                asyncHandler: responder
+            })
+        }
+    };
 
     Backendless.initApp = function (appId, secretKey, appVersion) {
         Backendless.applicationId = appId;
@@ -2918,14 +3716,18 @@
         Backendless.appVersion = appVersion;
         Backendless.appPath = [Backendless.serverURL, Backendless.appVersion].join('/');
         Backendless.UserService = new UserService();
+        Backendless.Users = Backendless.UserService;
         Backendless.Geo = new Geo();
         Backendless.Persistence = persistence;
+        Backendless.Data = persistence;
         Backendless.Messaging = new Messaging();
         Backendless.Files = new Files();
+        Backendless.Files.Permissions = new FilePermissions();
         Backendless.Commerce = new Commerce();
         Backendless.Events = new Events();
         Backendless.Cache = new Cache();
         Backendless.Counters = new Counters();
+        Backendless.CustomServices = new CustomServices();
         dataStoreCache = {};
         currentUser = null;
     };
@@ -2958,26 +3760,26 @@ BackendlessGeoQuery.prototype = {
         this.categories = this.categories || [];
         this.categories.push();
     },
-    setClusteringParams: function (westLongitude, eastLongitude, mapWidth, clusterGridSize){
+    setClusteringParams: function (westLongitude, eastLongitude, mapWidth, clusterGridSize) {
         clusterGridSize = clusterGridSize || 0;
         var parsedWestLongitude = parseFloat(westLongitude),
             parsedEastLongitude = parseFloat(eastLongitude),
             parsedMapWidth = parseInt(mapWidth),
             parsedClusterGridSize = parseInt(clusterGridSize);
 
-        if(!isFinite(parsedWestLongitude) || parsedWestLongitude < -180 || parsedWestLongitude > 180) {
+        if (!isFinite(parsedWestLongitude) || parsedWestLongitude < -180 || parsedWestLongitude > 180) {
             throw new Error("The westLongitude value must be a number in the range between -180 and 180");
         }
 
-        if(!isFinite(parsedEastLongitude) || parsedEastLongitude < -180 || parsedEastLongitude > 180) {
+        if (!isFinite(parsedEastLongitude) || parsedEastLongitude < -180 || parsedEastLongitude > 180) {
             throw new Error("The eastLongitude value must be a number in the range between -180 and 180");
         }
 
-        if(!isFinite(parsedMapWidth) || parsedMapWidth < 1) {
+        if (!isFinite(parsedMapWidth) || parsedMapWidth < 1) {
             throw new Error("The mapWidth value must be a number greater or equal to 1");
         }
 
-        if(!isFinite(parsedClusterGridSize) || parsedClusterGridSize < 0) {
+        if (!isFinite(parsedClusterGridSize) || parsedClusterGridSize < 0) {
             throw new Error("The clusterGridSize value must be a number greater or equal to 0");
         }
 
@@ -2990,7 +3792,7 @@ BackendlessGeoQuery.prototype = {
     }
 };
 
-var GeoPoint = function(){
+var GeoPoint = function () {
     this.___class = "GeoPoint";
     this.categories = undefined;
     this.latitude = undefined;
@@ -2999,7 +3801,7 @@ var GeoPoint = function(){
     this.objectId = undefined;
 };
 
-var GeoCluster = function(){
+var GeoCluster = function () {
     this.categories = undefined;
     this.latitude = undefined;
     this.longitude = undefined;
